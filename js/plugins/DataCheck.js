@@ -1,15 +1,16 @@
 /*:
  * @target MV
- * @plugindesc 日付チェック用プラグイン（12/24～12/31で xmas をセット）
- * @author ChatGPT
+ * @plugindesc 日付チェック用プラグイン
+ * @author 
  *
  * @help
  * プラグインコマンド:
  *   DataCheck
  *
  * 実行すると、
- *   ・12/24～12/31 の場合：変数1550 = "xmas"
- *   ・それ以外の日付     ：変数1550 = ""
+ *   ・4/1 の場合          ：変数1550 = "apfl"
+ *   ・12/24～12/31 の場合 ：変数1550 = "xmas"
+ *   ・それ以外の日付      ：変数1550 = ""
  *
  * PC版・スマホ版共通。
  */
@@ -24,20 +25,28 @@
     _Game_Interpreter_pluginCommand.call(this, command, args);
 
     if (command === "DataCheck") {
-      this.dataCheckXmas();
+      this.dataCheckSeason();
     }
   };
 
   // 実処理
-  Game_Interpreter.prototype.dataCheckXmas = function() {
+  Game_Interpreter.prototype.dataCheckSeason = function() {
     var d = new Date();
     var month = d.getMonth() + 1; // 1～12
     var day   = d.getDate();      // 1～31
 
-    var isXmas =
-      (month === 12 && day >= 24 && day <= 31);
+    var value = "";
 
-    $gameVariables.setValue(1550, isXmas ? "xmas" : "");
+    // 4/1 を優先
+    if (month === 4 && day === 1) {
+      value = "apfl";
+    }
+    // 12/24～12/31
+    else if (month === 12 && day >= 24 && day <= 31) {
+      value = "xmas";
+    }
+
+    $gameVariables.setValue(1550, value);
   };
 
 })();
