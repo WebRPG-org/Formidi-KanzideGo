@@ -128,6 +128,9 @@
                 size = Math.ceil(size / 5);
                 outline = Math.ceil(outline / 5);
             }
+            // CSVなどから渡されたテキスト問題だけ、DTextPicture側のサンプリング縁取りを有効化する。
+            $gameMap._interpreter.pluginCommand("D_TEXT_SETTING", ["OUTLINE_SAMPLE", "ON"]);
+            $gameScreen.dTextSampleOutline = true;
             $gameMap._interpreter.pluginCommand("D_TEXT", [`\\oc[black]\\ow[${outline}]${pictureName}`, size.toString()]);
             originalShowPicture.call(this, pictureId, null, origin, x, y, scaleX, scaleY, opacity, blendMode);
 

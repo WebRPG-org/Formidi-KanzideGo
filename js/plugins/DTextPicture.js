@@ -222,6 +222,54 @@
 
     var padempty = 1000;
     var padempty_lite = 200;
+
+    // 漢字でGO調整:
+    // CSV由来の問題テキストだけ、アウトラインを放射状サンプリング方式で描画します。
+    // 通常のDTextPictureはCanvas標準のdrawText描画に戻し、他テキストへの影響を避けます。
+    var LARGE_OUTLINE_NATIVE_DIVISOR = 5;
+    // 0以下にするとフォントサイズによる上限を無効化できます。
+    var LARGE_OUTLINE_MAX_FONT_RATIO = 0.36;
+    // HandwritingBoardBase / DrawStandards 系に合わせた放射状サンプリング数。
+    var LARGE_OUTLINE_SAMPLE_COUNT = 20;
+    // CSV / MakeMathQuestion 由来テキストピクチャのサンプリング縁取り半径倍率。
+    var D_TEXT_SAMPLE_OUTLINE_RADIUS_SCALE = 0.6;
+    var D_TEXT_SAMPLE_OUTLINE_VARIABLE_MARKS = '_dTextSampleOutlineVariableIds';
+
+    function getDTextTemp() {
+        return (typeof $gameTemp !== 'undefined') ? $gameTemp : null;
+    }
+
+    function isDTextSampleOutlineVariableMarked(usingVariables) {
+        var temp = getDTextTemp();
+        var marks = temp ? temp[D_TEXT_SAMPLE_OUTLINE_VARIABLE_MARKS] : null;
+        if (!marks || !usingVariables) return false;
+        for (var i = 0; i < usingVariables.length; i++) {
+            if (marks[String(usingVariables[i])]) return true;
+        }
+        return false;
+    }
+
+    function consumeDTextSampleOutlineNext() {
+        var temp = getDTextTemp();
+        if (temp && temp._dTextSampleOutlineNext) {
+            temp._dTextSampleOutlineNext = false;
+            return true;
+        }
+        return false;
+    }
+
+    function isCsvDTextPictureValue(value) {
+        var text = String(value || '');
+        // GetStageFromGitHub.createDTextString が作る「[\C[n]...]」形式をCSV由来の問題文として扱う。
+        return /\[[\\\x1b]C\[\d+\]/i.test(text);
+    }
+
+    function isDTextSampleOutlineTarget(value, usingVariables) {
+        return consumeDTextSampleOutlineNext() ||
+            isCsvDTextPictureValue(value) ||
+            isDTextSampleOutlineVariableMarked(usingVariables);
+    }
+
     var getCommandName = function (command) {
         return (command || '').toUpperCase();
     };
@@ -378,6 +426,10 @@
                     case 'ISRUBY':
                         $gameScreen.dTextWithRuby = getArgBoolean(args[1]);
                         break;
+                    case 'OUTLINE_SAMPLE':
+                    case 'SAMPLE_OUTLINE':
+                        $gameScreen.dTextSampleOutline = getArgBoolean(args[1]);
+                        break;
                 }
                 break;
             case 'D_TEXT_WINDOW_CURSOR':
@@ -445,6 +497,7 @@
         this.dTextGradationRight = 0;
         this.dTextGradationLeft = 0;
         this.dTextWithRuby = true;
+        this.dTextSampleOutline = false;
     };
 
     Game_Screen.prototype.setDTextPicture = function (value, size) {
@@ -454,6 +507,9 @@
             });
         }
         this.dUsingVariables = (this.dUsingVariables || []).concat(getUsingVariables(value));
+        if (isDTextSampleOutlineTarget(value, this.dUsingVariables)) {
+            this.dTextSampleOutline = true;
+        }
         this.dTextValue = (this.dTextValue || '') + getArgString(value, false) + '\n';
         this.dTextOriginal = (this.dTextOriginal || '') + value + '\n';
         this.dTextSize = size;
@@ -489,6 +545,9 @@
             gradationLeft: this.dTextGradationLeft,
             gradationRight: this.dTextGradationRight,
             isRuby: this.dTextWithRuby,
+            sampleOutline: !!this.dTextSampleOutline ||
+                isCsvDTextPictureValue(this.dTextOriginal) ||
+                isDTextSampleOutlineVariableMarked(this.dUsingVariables),
         };
     };
 
@@ -783,6 +842,8 @@
         this.applyTextDecoration();
         this.bitmap.fontFace = this.hiddenWindow.contents.fontFace;
         this.bitmap.smooth = true;//要確認
+        this.bitmap.dTextSampleOutline = !!this.dTextInfo.sampleOutline;
+        this.bitmap.dTextSampleOutlineColor = null;
         if (this.dTextInfo.color) {
             this.bitmap.fillAll(this.dTextInfo.color);
             var h = this.bitmap.height;
@@ -798,7 +859,11 @@
                 this.bitmap.gradientFillRect(w - gradationRight, 0, gradationRight, h, this.dTextInfo.color, 'rgba(0, 0, 0, 0)', false);
             }
         }
-        this._processText(this.bitmap);
+        if (this.bitmap.dTextSampleOutline) {
+            this._processTextWithSampledOutline();
+        } else {
+            this._processText(this.bitmap);
+        }
         this.setColorTone([0, 0, 0, 0]);
         if (this._frameWindow) {
             this.removeFrameWindow();
@@ -809,6 +874,52 @@
             this.makeFrameWindow(bitmapVirtual.width * scaleX, bitmapVirtual.height * scaleY);
         }
         this.hiddenWindow = null;
+    };
+
+    Sprite_Picture.prototype._processTextWithSampledOutline = function () {
+        var targetBitmap = this.bitmap;
+        var targetCtx = getBitmapContext(targetBitmap);
+        if (!targetCtx || typeof document === 'undefined') {
+            this._processText(targetBitmap);
+            return;
+        }
+
+        var sourceBitmap = new Bitmap(targetBitmap.width, targetBitmap.height);
+        copyDTextBitmapFontSettings(sourceBitmap, targetBitmap);
+        sourceBitmap.outlineWidth = targetBitmap.outlineWidth;
+        sourceBitmap.outlineColor = targetBitmap.outlineColor;
+        sourceBitmap.decorationMode = targetBitmap.decorationMode;
+        sourceBitmap.smooth = true;
+        sourceBitmap.dTextDrawTextOnly = true;
+        sourceBitmap.dTextCollectOutline = true;
+
+        this._processText(sourceBitmap);
+
+        var sourceCanvas = getBitmapCanvas(sourceBitmap);
+        if (!sourceCanvas) {
+            this._processText(targetBitmap);
+            return;
+        }
+
+        var outlineWidth = Math.max(0, Number(sourceBitmap._dTextSampleOutlineMaxWidth || targetBitmap.outlineWidth || 0));
+        if (outlineWidth > 0) {
+            var radius = getRadialOutlineRadius(outlineWidth, sourceBitmap, null) * Number(D_TEXT_SAMPLE_OUTLINE_RADIUS_SCALE || 1);
+            var samples = Math.max(8, Math.round(Number(LARGE_OUTLINE_SAMPLE_COUNT || 32)));
+            var outlineColor = sourceBitmap._dTextSampleOutlineColor || targetBitmap.outlineColor || 'rgba(0,0,0,1)';
+            var outlineCanvas = createRadialOutlineCanvas(sourceCanvas, outlineColor, radius, samples);
+            targetCtx.save();
+            targetCtx.imageSmoothingEnabled = true;
+            if ('imageSmoothingQuality' in targetCtx) {
+                targetCtx.imageSmoothingQuality = 'high';
+            }
+            targetCtx.drawImage(outlineCanvas, 0, 0);
+            targetCtx.drawImage(sourceCanvas, 0, 0);
+            targetCtx.restore();
+            setBitmapDirty(targetBitmap);
+        } else {
+            targetCtx.drawImage(sourceCanvas, 0, 0);
+            setBitmapDirty(targetBitmap);
+        }
     };
 
     Sprite_Picture.prototype.applyTextDecoration = function () {
@@ -959,19 +1070,147 @@
         }
     };
 
-    function OutlineText(textState,bitmap,outline_degree,c,w,x,y) {
-        const bitmaptmp = bitmap.outlineWidth;
-        bitmap.outlineWidth = 0;
-        const bitmapcolortmp = bitmap.textColor;
-        bitmap.textColor = 'rgba(0,0,0,1)';
-        const n_value = $gameVariables.value(param.n_value);
-        for (var angle = 0; angle < n_value; angle++) {
-            bitmap.drawText(c, x + outline_degree / 10 * Math.cos(2 * 3.1415 * angle / n_value), y + outline_degree / 10 * Math.sin(2 * 3.1415 * angle / n_value), w * 2, textState.height, 'left');
-        }
-        bitmap.textColor = bitmapcolortmp;
-        bitmap.drawText(c, x, y, w * 2, textState.height, 'left');
-        bitmap.outlineWidth = bitmaptmp;
+    function getRadialOutlineRadius(outlineDegree, bitmap, textState) {
+        var width = Math.max(0, Number(outlineDegree || 0));
 
+        // 既存運用では \ow[50] 以上が「強制アウトライン」扱いで、
+        // 値そのものを半径にすると過剰になりやすいため従来通り圧縮する。
+        if (width >= 50) {
+            var divisor = Math.max(1, Number(LARGE_OUTLINE_NATIVE_DIVISOR || 1));
+            width = width / divisor;
+        }
+
+        var fontSize = Number((bitmap && bitmap._dTextSampleOutlineMaxFontSize) || bitmap.fontSize || (textState ? textState.height : 0) || 0);
+        var maxRatio = Number(LARGE_OUTLINE_MAX_FONT_RATIO || 0);
+        if (fontSize > 0 && maxRatio > 0) {
+            width = Math.min(width, fontSize * maxRatio);
+        }
+        return width;
+    }
+
+    function getBitmapCanvas(bitmap) {
+        return bitmap ? (bitmap._canvas || bitmap.canvas || null) : null;
+    }
+
+    function getBitmapContext(bitmap) {
+        return bitmap ? (bitmap._context || bitmap.context || null) : null;
+    }
+
+    function setBitmapDirty(bitmap) {
+        if (!bitmap) return;
+        if (typeof bitmap._setDirty === 'function') {
+            bitmap._setDirty();
+        } else if (bitmap._baseTexture && typeof bitmap._baseTexture.update === 'function') {
+            bitmap._baseTexture.update();
+        }
+    }
+
+    function copyDTextBitmapFontSettings(targetBitmap, sourceBitmap) {
+        targetBitmap.fontFace = sourceBitmap.fontFace;
+        targetBitmap.fontSize = sourceBitmap.fontSize;
+        targetBitmap.fontItalic = !!sourceBitmap.fontItalic;
+        targetBitmap.fontBold = !!sourceBitmap.fontBold;
+        targetBitmap.fontBoldFotDtext = !!sourceBitmap.fontBoldFotDtext;
+        targetBitmap.textColor = sourceBitmap.textColor;
+    }
+
+    function collectDTextSampleOutline(bitmap, outlineWidth) {
+        if (!bitmap || !bitmap.dTextCollectOutline) return;
+        outlineWidth = Math.max(0, Number(outlineWidth || 0));
+        bitmap._dTextSampleOutlineMaxFontSize = Math.max(
+            Number(bitmap._dTextSampleOutlineMaxFontSize || 0),
+            Number(bitmap.fontSize || 0)
+        );
+        if (outlineWidth <= 0) return;
+        if (!bitmap._dTextSampleOutlineMaxWidth || outlineWidth >= bitmap._dTextSampleOutlineMaxWidth) {
+            bitmap._dTextSampleOutlineMaxWidth = outlineWidth;
+            bitmap._dTextSampleOutlineColor = bitmap.outlineColor;
+        }
+    }
+
+    function drawTextWithoutNativeOutline(bitmap, c, x, y, width, height) {
+        var originalOutlineWidth = bitmap.outlineWidth;
+        var originalOutlineColor = bitmap.outlineColor;
+        bitmap.outlineWidth = 0;
+        bitmap.outlineColor = 'rgba(0,0,0,0)';
+        bitmap.drawText(c, x, y, width, height, 'left');
+        bitmap.outlineWidth = originalOutlineWidth;
+        bitmap.outlineColor = originalOutlineColor;
+    }
+
+    function createRadialOutlineCanvas(sourceCanvas, color, radius, samples) {
+        var outlineCanvas = document.createElement('canvas');
+        outlineCanvas.width = Math.max(1, Number(sourceCanvas.width || 0));
+        outlineCanvas.height = Math.max(1, Number(sourceCanvas.height || 0));
+        var outlineCtx = outlineCanvas.getContext('2d');
+        outlineCtx.clearRect(0, 0, outlineCanvas.width, outlineCanvas.height);
+
+        if (radius > 0) {
+            for (var i = 0; i < samples; i++) {
+                var angle = Math.PI * 2 * i / samples;
+                outlineCtx.drawImage(
+                    sourceCanvas,
+                    Math.cos(angle) * radius,
+                    Math.sin(angle) * radius
+                );
+            }
+        } else {
+            outlineCtx.drawImage(sourceCanvas, 0, 0);
+        }
+
+        outlineCtx.globalCompositeOperation = 'source-in';
+        outlineCtx.fillStyle = color || 'rgba(0,0,0,1)';
+        outlineCtx.fillRect(0, 0, outlineCanvas.width, outlineCanvas.height);
+        outlineCtx.globalCompositeOperation = 'source-over';
+        return outlineCanvas;
+    }
+
+    function OutlineText(textState, bitmap, outline_degree, c, w, x, y) {
+        var targetCtx = getBitmapContext(bitmap);
+        if (!targetCtx || typeof document === 'undefined') {
+            bitmap.drawText(c, x, y, w * 2, textState.height, 'left');
+            return;
+        }
+
+        var originalOutlineWidth = bitmap.outlineWidth;
+        var originalOutlineColor = bitmap.outlineColor;
+        var originalTextColor = bitmap.textColor;
+        var radius = getRadialOutlineRadius(outline_degree, bitmap, textState);
+        var samples = Math.max(8, Math.round(Number(LARGE_OUTLINE_SAMPLE_COUNT || 32)));
+        var lineHeight = Math.max(1, Math.ceil(Number(textState.height || bitmap.fontSize || 0)));
+        var drawWidth = Math.max(1, Math.ceil(Number(w || 0) * 2));
+        var pad = Math.max(2, Math.ceil(radius + 4));
+        var sourceBitmap = new Bitmap(drawWidth + pad * 2, lineHeight + pad * 2);
+        copyDTextBitmapFontSettings(sourceBitmap, bitmap);
+        sourceBitmap.outlineWidth = 0;
+        sourceBitmap.outlineColor = 'rgba(0,0,0,0)';
+        sourceBitmap.textColor = originalTextColor;
+        sourceBitmap.smooth = true;
+        sourceBitmap.drawText(c, pad, pad, drawWidth, lineHeight, 'left');
+
+        var sourceCanvas = getBitmapCanvas(sourceBitmap);
+        if (!sourceCanvas) {
+            bitmap.drawText(c, x, y, w * 2, textState.height, 'left');
+            return;
+        }
+
+        var outlineCanvas = createRadialOutlineCanvas(sourceCanvas, originalOutlineColor || 'rgba(0,0,0,1)', radius, samples);
+        var baseX = x - pad;
+        var baseY = y - pad;
+
+        targetCtx.save();
+        targetCtx.imageSmoothingEnabled = true;
+        if ('imageSmoothingQuality' in targetCtx) {
+            targetCtx.imageSmoothingQuality = 'high';
+        }
+        targetCtx.drawImage(outlineCanvas, baseX, baseY);
+        targetCtx.drawImage(sourceCanvas, baseX, baseY);
+        targetCtx.restore();
+
+        bitmap.outlineWidth = originalOutlineWidth;
+        bitmap.outlineColor = originalOutlineColor;
+        bitmap.textColor = originalTextColor;
+        setBitmapDirty(bitmap);
     }
 
     Sprite_Picture.prototype._startUnderText = function (textState, bitmap) {
@@ -996,12 +1235,15 @@
     };
 
     function DrawText(c, w, x, y, outline,textState, bitmap) {
-        const outlineWidth = bitmap.outlineWidth;
-        if (outlineWidth >= 50) {
-            // アウトライン付きテキストを描画
-            OutlineText(textState, bitmap, outline, c, w, x, y);
+        const outlineWidth = Math.max(0, Number(outline || bitmap.outlineWidth || 0));
+        collectDTextSampleOutline(bitmap, outlineWidth);
+        if (bitmap.dTextDrawTextOnly) {
+            drawTextWithoutNativeOutline(bitmap, c, x, y, w * 2, textState.height);
+        } else if (bitmap.dTextSampleOutline && outlineWidth > 0) {
+            // フォールバック用。通常は完成後の文字Bitmap全体に対してサンプリング縁取りを掛けます。
+            OutlineText(textState, bitmap, outlineWidth, c, w, x, y);
         } else {
-            // アウトラインなしのテキストを描画
+            // 通常のDTextPictureは従来通りCanvas標準のdrawTextで描画
             bitmap.drawText(c, x, y, w * 2, textState.height, 'left');
         }
     }
@@ -1109,7 +1351,7 @@
             bitmap.textColor = this.hiddenWindow.textColor(0);
             
         } else {
-            bitmap.drawText(textState.inRubyTextString, center - textState.inRubyTextString.length * font_mini, textState.RubyStart_y + offset, w * 2, textState.height, 'left');
+            DrawText(textState.inRubyTextString, w, center - textState.inRubyTextString.length * font_mini, textState.RubyStart_y + offset, bitmap.outlineWidth / 1.3, textState, bitmap);
         }
         bitmap.fontSize = originalFontSize;
         this._RubyTextDelete(textState);

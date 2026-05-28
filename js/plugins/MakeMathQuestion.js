@@ -26,6 +26,12 @@
 
     var question_length = 50;
 
+    function markMathQuestionForDTextSampleOutline() {
+        if (typeof $gameTemp === 'undefined') return;
+        $gameTemp._dTextSampleOutlineVariableIds = $gameTemp._dTextSampleOutlineVariableIds || {};
+        $gameTemp._dTextSampleOutlineVariableIds[String(mondai_index)] = true;
+    }
+
 
     Game_Interpreter.prototype.pluginCommand = function(command, args) {
         pluginCommand.call(this, command, args);
@@ -66,12 +72,14 @@
                     var quest = expression.join().replace(/,/g, '');
                     $gameVariables.setValue(mondai_index, `${quest} ＝ ${answer}`);
                     $gameVariables.setValue(kotae_index, tmp);
+                    markMathQuestionForDTextSampleOutline();
                     //console.log(`${quest} ＝ ${answer}`);
                 }
             } else {
                 var quest = expression.join().replace(/,/g, '');
                 $gameVariables.setValue(mondai_index, quest);
                 $gameVariables.setValue(kotae_index, answer);
+                markMathQuestionForDTextSampleOutline();
             }
             if ($gameVariables.value(1265) >= 1) {
                 $gameVariables.setValue(mondai_index, transformTextWithNumbers($gameVariables.value(mondai_index)));
@@ -340,6 +348,7 @@
 
         $gameVariables.setValue(mondai_index, quest);
         $gameVariables.setValue(kotae_index, answer);
+        markMathQuestionForDTextSampleOutline();
     }
 
     function Ingenuity(difficulty) {
@@ -715,6 +724,7 @@
 
         $gameVariables.setValue(mondai_index, quest);
         $gameVariables.setValue(kotae_index, answer);
+        markMathQuestionForDTextSampleOutline();
     }
 
     function insertDecimalPoint(number) {
@@ -1039,6 +1049,7 @@
         }
         $gameVariables.setValue(mondai_index, quest);
         $gameVariables.setValue(kotae_index, answer);
+        markMathQuestionForDTextSampleOutline();
     }
 
     function Abacus(level) {
@@ -1079,6 +1090,7 @@
         }
         $gameVariables.setValue(mondai_index, quest);
         $gameVariables.setValue(kotae_index, answer);
+        markMathQuestionForDTextSampleOutline();
 
     }
 
